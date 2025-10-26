@@ -1,5 +1,5 @@
 # ==========================================
-# Beregn per-bånd mean/std fra TRAIN og lagre norm_ms.json
+# Beregn per-bånd mean/std fra TRAIN
 # ==========================================
 import tensorflow as tf, numpy as np, json, os
 import pandas as pd
