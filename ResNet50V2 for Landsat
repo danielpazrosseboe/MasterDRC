@@ -3,8 +3,6 @@
 #  - 1×1 projeksjon 7→3 inn i ImageNet-ResNet50V2
 #  - Frys tidlige blokker (trener conv4+conv5)
 #  - MSE-tap, MSE og RMSE som metrikker
-#  - Train + eval i én celle
-# Forutsetter at train_ds, val_ds, test_ds allerede eksisterer.
 # ==========================================
 import tensorflow as tf
 import numpy as np
@@ -23,7 +21,7 @@ def build_resnet50v2_7ch_proj(input_shape=(224, 224, 7), freeze_upto="conv4_bloc
         kernel_initializer=tf.keras.initializers.Constant(w)
     )(inp)
 
-    # ImageNet-basemodell på 3 kanaler. Laster interne vekter problemfritt.
+    # ImageNet-basemodell på 3 kanaler
     base = tf.keras.applications.ResNet50V2(
         include_top=False, weights="imagenet", input_shape=(224, 224, 3), pooling="avg"
     )
@@ -70,7 +68,7 @@ history = model.fit(
     train_ds,
     validation_data=val_ds,
     epochs=EPOCHS,
-    verbose=1,               # skriver mse og rmse per epoch
+    verbose=1,             
     callbacks=callbacks
 )
 
@@ -78,5 +76,3 @@ history = model.fit(
 test_metrics = model.evaluate(test_ds, return_dict=True, verbose=1)
 print("Test metrics:", test_metrics)
 
-# Valgfritt: lagre endelig modell også
-model.save(str(BASE / "manifests_ms/final_ms_resnet50v2_drc.keras"))
