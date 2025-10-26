@@ -11,14 +11,13 @@ COVERAGE_THRESHOLD = 0.50
 EXPORT_DIMS = f"{CHIP_PIX}x{CHIP_PIX}"
 THROTTLE_SECONDS = 0.35
 
-# Base folder; exports go to separate subfolders per window by naming convention
+# Base folder; exports go to separate subfolders per window
 DRIVE_MS_BASE = "drc_ms_chips_y19"
 
 WINDOWS_TO_RUN = ["2006-2008","2012-2014","2022-2024"]
 START_AT_IDX   = {"2006-2008":0, "2012-2014":0, "2022-2024":0}
 
 def drive_folder_for(win):
-    # Earth Engine creates the Drive folder if missing
     return f"{DRIVE_MS_BASE}_{win}"  # e.g., drc_ms_chips_y19_2012-2014
 
 # ---- FC helpers ----
@@ -54,7 +53,7 @@ def chip_square(point):
     half_m = (CHIP_PIX * SCALE_M) / 2.0
     return ee.Geometry(point).buffer(half_m).bounds()
 
-# ---- Load DHS FeatureCollections (update asset IDs if needed) ----
+# ---- Load DHS FeatureCollections ----
 C07 = dedupe_by_xy(drop_zero_zero(ee.FeatureCollection("users/pazern10/2007")))
 C13 = dedupe_by_xy(drop_zero_zero(ee.FeatureCollection("users/pazern10/2013-14")))
 C23 = dedupe_by_xy(drop_zero_zero(ee.FeatureCollection("users/pazern10/2023-24")))
@@ -65,7 +64,7 @@ FC_BY_WINDOW = {
     "2022-2024": with_window_and_uid(C23, "2022-2024"),
 }
 
-# ---- Coverage annotation (server-side) ----
+# ---- Coverage annotation ----
 def annotate_cov(win, fc_slice):
     def _mark(f):
         pt   = f.geometry().centroid(1)
