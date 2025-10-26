@@ -1,6 +1,5 @@
 # ===========================================
 # FAST LANDSAT MS EXPORT — per-period folders (2006-08, 2012-14, 2022-24)
-# Requires: ee initialized + landsat_ms_composite(window_label, geom) defined
 # ===========================================
 import ee, time
 
