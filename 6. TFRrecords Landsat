@@ -1,8 +1,6 @@
 # ==========================================
-# BUILD TFRRECORDS — LANDSAT MS ONLY (auto-resolve folders)
+# BUILD TFRRECORDS — LANDSAT MS ONLY
 # ==========================================
-# Run first in Colab if not already:
-# from google.colab import drive; drive.mount('/content/drive', force_remount=True)
 
 import tensorflow as tf
 import numpy as np
