@@ -1,5 +1,5 @@
 # ==========================================
-# MERGE WEALTH — behold kun nødvendige kolonner + oppdater TFR-stier (fixed)
+# MERGE WEALTH
 # ==========================================
 import pandas as pd, os
 from pathlib import Path
@@ -17,7 +17,7 @@ OUT_PATH  = OUTDIR / "manifest_ms_split_merged.csv"
 assert MAN_SPLIT.exists(), f"Mangler manifest: {MAN_SPLIT}"
 assert WEALTH_CSV.exists(), f"Mangler wealth CSV: {WEALTH_CSV}"
 
-# --- Les og normaliser kolonnenavn ---
+# --- normaliser kolonnenavn ---
 m = pd.read_csv(MAN_SPLIT)
 m.columns = [c.strip().lower() for c in m.columns]
 for need in ["uid","window","tfrecord","split"]:
