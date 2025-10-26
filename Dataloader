@@ -1,0 +1,62 @@
+# DATALOADER — 224×224 crop + global normalisering + wealth labels
+import tensorflow as tf, pandas as pd, json, numpy as np
+from pathlib import Path
+import os
+
+BASE   = Path("/content/drive/MyDrive")
+OUTDIR = BASE / "manifests_ms"
+MAN    = pd.read_csv(OUTDIR / "manifest_ms_split_merged.csv")
+with open(OUTDIR / "norm_ms.json") as f: NORM = json.load(f)
+
+H,W,C = 255,255,7
+CROP, PAD = 224, (H-CROP)//2
+MEAN = tf.constant(NORM["mean"], tf.float32)
+STD  = tf.where(tf.constant(NORM["std"], tf.float32) > 1e-6,
+                tf.constant(NORM["std"], tf.float32),
+                tf.ones_like(MEAN))
+
+FEATURES = {
+    "uid":    tf.io.FixedLenFeature([], tf.string),
+    "window": tf.io.FixedLenFeature([], tf.string),
+    "image":  tf.io.FixedLenFeature([H*W*C], tf.float32),
+}
+
+def _parse(ex):
+    ex  = tf.io.parse_single_example(ex, FEATURES)
+    img = tf.reshape(ex["image"], [H,W,C])[PAD:PAD+CROP, PAD:PAD+CROP, :]
+    img = (img - MEAN) / STD
+    return img, {"uid": ex["uid"], "window": ex["window"]}
+
+# build wealth lookup
+MAN["uid"] = MAN["uid"].astype(str).str.strip()
+MAN["window"] = MAN["window"].astype(str).str.strip()
+MAN["wealth"] = pd.to_numeric(MAN["wealth"], errors="coerce").astype(np.float32)
+keys_all = tf.constant((MAN["uid"] + "|" + MAN["window"]).values, tf.string)
+vals_all = tf.constant(MAN["wealth"].values, tf.float32)
+wealth_tbl = tf.lookup.StaticHashTable(
+    tf.lookup.KeyValueTensorInitializer(keys_all, vals_all),
+    default_value=tf.constant(np.nan, tf.float32)
+)
+
+def add_label(img, meta):
+    key = tf.strings.join([meta["uid"], meta["window"]], separator="|")
+    y = wealth_tbl.lookup(key)
+    return img, y
+
+def make_ds(split, batch=32, shuffle=True):
+    tfrs = sorted([p for p in MAN.loc[MAN.split==split,"tfrecord"].dropna().unique() if os.path.exists(p)])
+    ds = tf.data.TFRecordDataset(tfrs, num_parallel_reads=tf.data.AUTOTUNE).map(_parse, tf.data.AUTOTUNE)
+    ds = ds.map(add_label, tf.data.AUTOTUNE).filter(lambda x,y: tf.math.is_finite(y))
+    if shuffle: ds = ds.shuffle(4096, reshuffle_each_iteration=True)
+    return ds.batch(batch).prefetch(tf.data.AUTOTUNE)
+
+train_ds = make_ds("train")
+val_ds   = make_ds("val", shuffle=False)
+test_ds  = make_ds("test", shuffle=False)
+
+# quick sanity check
+for name, ds in [("train",train_ds),("val",val_ds),("test",test_ds)]:
+    x,y = next(iter(ds))
+    print(f"{name}: x{tuple(x.shape)} {x.dtype} | y{tuple(y.shape)} {y.dtype} | NaN img/y:",
+          tf.math.reduce_any(~tf.math.is_finite(x)).numpy(),
+          tf.math.reduce_any(~tf.math.is_finite(y)).numpy())
