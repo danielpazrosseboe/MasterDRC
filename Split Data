@@ -1,5 +1,5 @@
 # ==========================================
-# MERGE WEALTH — behold kun nødvendige kolonner + oppdater TFR-stier (fixed)
+# MERGE WEALTH
 # ==========================================
 import pandas as pd, os
 from pathlib import Path
@@ -24,13 +24,12 @@ for need in ["uid","window","tfrecord","split"]:
     if need not in m.columns:
         raise ValueError(f"Mangler kolonne i manifest: {need}")
 
-# --- Oppdater TFRecord-stier til 'tfrecords_ms_y19_fixed' hvis finnes ---
+# --- Oppdater TFRecord-stier til 'tfrecords_ms_y19_fixed' ---
 def map_tfr(win: str) -> str:
     new_p = TFR_DIR_FIXED / f"landsat_{win}.tfrecord"
     old_p = TFR_DIR_OLD   / f"landsat_{win}.tfrecord"
     if new_p.exists(): return str(new_p)
     if old_p.exists(): return str(old_p)
-    # fallback til eksisterende verdi i manifest
     return None
 
 m["window"] = m["window"].astype(str).str.strip()
@@ -38,7 +37,7 @@ mapped = m["window"].map(map_tfr)
 # bare erstatt dersom vi faktisk fant en fil
 m.loc[mapped.notna(), "tfrecord"] = mapped[mapped.notna()].values
 
-# --- Parse cluster_id fra uid i manifestet (format: '<id>_<window>') ---
+# --- Parse cluster_id fra uid ---
 def parse_cluster(u):
     try:
         base = str(u).split("_")[0]
@@ -55,23 +54,20 @@ if "wealth_std" not in w.columns or "cluster_id" not in w.columns or "window" no
     raise ValueError("Wealth CSV må ha kolonnene: cluster_id, window, wealth_std")
 w = w.rename(columns={"wealth_std": "wealth"})
 
-# Map wealth-vinduer til 3-års vinduer brukt i manifestet
+# Map wealth-vinduer til 3-års vinduer
 win_map = {"2007":"2006-2008", "2013-2014":"2012-2014", "2023-2024":"2022-2024"}
 w["window3"] = w["window"].astype(str).map(win_map).fillna(w["window"].astype(str))
 
-# --- Merge: venstreslå m mot w på (cluster_id, window) ---
+# --- Merge ---
 merged = m.merge(
     w[["cluster_id", "window3", "wealth"]],
     left_on=["cluster_id_int", "window"],
     right_on=["cluster_id", "window3"],
     how="left"
 )
-
-# --- Velg KUN nødvendige kolonner ---
 keep = ["uid", "window", "tfrecord", "split", "wealth"]
 out = merged[keep].copy()
 
-# --- Rydd duplikater og trims ---
 out = out.drop_duplicates(subset=["uid","window"], keep="first").reset_index(drop=True)
 out["tfrecord"] = out["tfrecord"].astype(str).str.strip()
 
