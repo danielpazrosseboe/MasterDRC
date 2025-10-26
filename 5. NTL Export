@@ -1,6 +1,5 @@
 -# ==========================================
 # FAST NTL EXPORT — per-period folders, 20→5→1 backoff
-# Assumes: ee initialized, FC assets exist, and nightlights_composite(window_label, geom) is defined.
 # ==========================================
 import ee, time
 
@@ -53,7 +52,7 @@ def chip_square(point):
     half_m = (CHIP_PIX * SCALE_M) / 2.0
     return ee.Geometry(point).buffer(half_m).bounds()
 
-# ---- Load DHS FeatureCollections (update asset IDs if needed) ----
+# ---- Load DHS FeatureCollections ----
 C07 = dedupe_by_xy(drop_zero_zero(ee.FeatureCollection("users/pazern10/2007")))
 C13 = dedupe_by_xy(drop_zero_zero(ee.FeatureCollection("users/pazern10/2013-14")))
 C23 = dedupe_by_xy(drop_zero_zero(ee.FeatureCollection("users/pazern10/2023-24")))
@@ -64,12 +63,12 @@ FC_BY_WINDOW = {
     "2022-2024": with_window_and_uid(C23, "2022-2024"),
 }
 
-# ---- Coverage annotation (use MS coverage mask for gating, fast and consistent) ----
+# ---- Coverage annotation ----
 def annotate_cov_ms(win, fc_slice):
     def _mark(f):
         pt   = f.geometry().centroid(1)
         chip = chip_square(pt)
-        ms   = landsat_ms_composite(win, chip)  # must filterBounds(geom) internally
+        ms   = landsat_ms_composite(win, chip)
         v = ms.select(MS_BANDS).mask().reduce(ee.Reducer.min())
         vsum = ee.Number(v.unmask(0).reduceRegion(
             reducer=ee.Reducer.sum(), geometry=chip, scale=SCALE_M,
@@ -83,7 +82,7 @@ def annotate_cov_ms(win, fc_slice):
 
 # ---- Export one feature ----
 def export_nl(win, feat):
-    uid  = ee.String(feat.get("uid")).getInfo()  # small per-chip transfer
+    uid  = ee.String(feat.get("uid")).getInfo() 
     chip = chip_square(feat.geometry().centroid(1))
     img  = nightlights_composite(win, chip).select(NL_BANDS).clip(chip).toFloat()
     desc = f"nl_{win}_{uid}"
@@ -98,7 +97,7 @@ def export_nl(win, feat):
         maxPixels=1e13
     ).start()
 
-# ---- Slice export with targeted fallback ----
+# ---- Slice export----
 def _export_slice(win, base, start, limit, quiet=False):
     slice_fc = ee.FeatureCollection(base.toList(limit, start))
     keep = annotate_cov_ms(win, slice_fc).filter(ee.Filter.gte("valid_frac", COVERAGE_THRESHOLD))
