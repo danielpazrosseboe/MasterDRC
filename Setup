@@ -1,0 +1,34 @@
+# =========================
+# Cell 1 — Setup + constants
+# =========================
+!pip -q install earthengine-api rasterio
+
+import ee
+ee.Authenticate()
+ee.Initialize(project='master-thesis-measles')
+
+# Five 3-year windows
+WINDOWS = {
+    "2006-2008": ("2006-01-01","2008-12-31"),
+    "2012-2014": ("2012-01-01","2014-12-31"),
+    "2015-2017": ("2015-01-01","2017-12-31"),
+    "2018-2020": ("2018-01-01","2020-12-31"),
+    "2022-2024": ("2022-01-01","2024-12-31"),
+}
+
+# Bands (Yeh-style MS = 7 bands; NL = 2 bands)
+MS_BANDS = ["BLUE","GREEN","RED","NIR","SWIR1","SWIR2","TEMP"]
+NL_BANDS = ["DMSP","VIIRS"]
+
+# Tiling geometry (Landsat @ 30 m; 255 px → ~7.65 km)
+SCALE_M   = 30
+CHIP_PIX  = 255
+HALF_M    = (CHIP_PIX * SCALE_M) / 2.0
+
+def chip_square(point):
+    """Square bounds centered at point with side ≈ 7.65 km."""
+    return ee.Geometry(point).buffer(HALF_M).bounds()
+
+def get_window_dates(win):
+    s, e = WINDOWS[win]
+    return ee.Date(s), ee.Date(e)
