@@ -1,34 +1,29 @@
-# =========================
-# Cell 1 — Setup + constants
-# =========================
-!pip -q install earthengine-api rasterio
+import os, re, io, zipfile, requests, glob
+import numpy as np
+import pandas as pd
+from pathlib import Path
+from tqdm.auto import tqdm
 
-import ee
-ee.Authenticate()
-ee.Initialize(project='master-thesis-measles')
+import geopandas as gpd
+from shapely.geometry import Point
+from rasterstats import zonal_stats
+from docx import Document
 
-# Five 3-year windows
-WINDOWS = {
-    "2006-2008": ("2006-01-01","2008-12-31"),
-    "2012-2014": ("2012-01-01","2014-12-31"),
-    "2015-2017": ("2015-01-01","2017-12-31"),
-    "2018-2020": ("2018-01-01","2020-12-31"),
-    "2022-2024": ("2022-01-01","2024-12-31"),
+# Colab: mount Drive
+from google.colab import drive
+drive.mount('/content/drive')
+
+# Helpers
+def safe_as_int(s: pd.Series) -> pd.Series:
+    return pd.to_numeric(s, errors="coerce").astype("Int64")
+
+ROOT = Path("/content/drive/MyDrive/Master_Thesis")
+OUT_DIR = ROOT / "outputs"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# DHS rounds — NOTE: first round is '2007'
+dhs_rounds = {
+  "2007":       {"hr": ROOT / "DHS HR 2007", "gps": ROOT / "DHS GPS 2007"},
+  "2013-2014":  {"hr": ROOT / "DHS HR 2013-2014", "gps": ROOT / "DHS GPS 2013-2014"},
+  "2023-2024":  {"hr": ROOT / "DHS HR 2023-2024", "gps": ROOT / "DHS GPS 2023-2024"},
 }
-
-# Bands (Yeh-style MS = 7 bands; NL = 2 bands)
-MS_BANDS = ["BLUE","GREEN","RED","NIR","SWIR1","SWIR2","TEMP"]
-NL_BANDS = ["DMSP","VIIRS"]
-
-# Tiling geometry (Landsat @ 30 m; 255 px → ~7.65 km)
-SCALE_M   = 30
-CHIP_PIX  = 255
-HALF_M    = (CHIP_PIX * SCALE_M) / 2.0
-
-def chip_square(point):
-    """Square bounds centered at point with side ≈ 7.65 km."""
-    return ee.Geometry(point).buffer(HALF_M).bounds()
-
-def get_window_dates(win):
-    s, e = WINDOWS[win]
-    return ee.Date(s), ee.Date(e)
