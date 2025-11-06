@@ -1,149 +1,184 @@
-# ===========================================
-# FAST LANDSAT MS EXPORT — per-period folders (2006-08, 2012-14, 2022-24)
-# ===========================================
-import ee, time
+# ====================== EXACT-SCHEMA TFRECORD EXPORT (FIXED) ======================
+# Exports post-2016 clusters from clusters_yeh_spec.csv to Google Drive folder
+# 'dhs_tfrecords_raw' with Yeh-style schema:
+# - Float list (len 65025) per band: BLUE,GREEN,RED,NIR,SWIR1,SWIR2,TEMP1,LON,LAT,NIGHTLIGHTS
+# - Scalars: cluster_index (int), year (int), lon (float), wealthpooled (float), country (bytes)
+# - No scalar 'lat'
+# ================================================================================
 
-# ---- Config ----
-MS_BANDS = ["BLUE","GREEN","RED","NIR","SWIR1","SWIR2","TEMP"]
-SCALE_M  = 30
-CHIP_PIX = 255
-COVERAGE_THRESHOLD = 0.50
-EXPORT_DIMS = f"{CHIP_PIX}x{CHIP_PIX}"
-THROTTLE_SECONDS = 0.35
+import math, time
+from typing import Dict, Tuple, Any
 
-# Base folder; exports go to separate subfolders per window
-DRIVE_MS_BASE = "drc_ms_chips_y19"
+import ee
+import pandas as pd
+from tqdm.auto import tqdm
 
-WINDOWS_TO_RUN = ["2006-2008","2012-2014","2022-2024"]
-START_AT_IDX   = {"2006-2008":0, "2012-2014":0, "2022-2024":0}
+# ---- Authenticate/initialize if needed ----
+ee.Authenticate()
+ee.Initialize(project='master-thesis-measles')
 
-def drive_folder_for(win):
-    return f"{DRIVE_MS_BASE}_{win}"  # e.g., drc_ms_chips_y19_2012-2014
+CSV_PATH           = "/content/drive/My Drive/Master_Thesis/Surveys/clusters_yeh_spec.csv"
+DRIVE_FOLDER       = "dhs_tfrecords_raw"
+SCALE              = 30
+EXPORT_TILE_RADIUS = 127   # 255x255
+CHUNK_SIZE         = 10    # lower if memory errors
+POLL_SECONDS       = 20
 
-# ---- FC helpers ----
-def add_xy(f):
-    c = f.geometry().centroid(1).coordinates()
-    return f.set({"lon": c.get(0), "lat": c.get(1)})
+BANDS = ['BLUE','GREEN','RED','NIR','SWIR1','SWIR2','TEMP1','LON','LAT','NIGHTLIGHTS']
 
-def drop_zero_zero(fc):
-    return fc.map(add_xy).filter(ee.Filter.Or(ee.Filter.neq("lon", 0), ee.Filter.neq("lat", 0)))
+def three_year_window(y: int) -> Tuple[str, str]:
+    if   2015 <= y <= 2017: return "2015-01-01", "2017-12-31"
+    elif 2018 <= y <= 2020: return "2018-01-01", "2020-12-31"
+    elif 2021 <= y <= 2023: return "2021-01-01", "2023-12-31"
+    elif 2024 <= y <= 2026: return "2024-01-01", "2026-12-31"
+    else:                   return f"{y-1}-01-01", f"{y+1}-12-31"
 
-def dedupe_by_xy(fc, decimals=5):
-    def _round(v): return ee.Number(v).format(f"%.{decimals}f")
-    def _with_key(f):
-        c = f.geometry().centroid(1).coordinates()
-        k = ee.String(_round(c.get(0))).cat("_").cat(_round(c.get(1)))
-        return f.set({"xy_key": k})
-    return fc.map(_with_key).distinct(["xy_key"])
+def composite_viirs(start: str, end: str) -> ee.Image:
+    return (ee.ImageCollection('NOAA/VIIRS/DNB/MONTHLY_V1/VCMSLCFG')
+            .filterDate(start, end)
+            .median()
+            .select(['avg_rad'], ['NIGHTLIGHTS']))
 
-def with_window_and_uid(fc, window_label):
-    def _tag(f):
-        has_uid = f.propertyNames().contains("uid")
-        def _make_uid():
-            cid = ee.Algorithms.If(f.propertyNames().contains("cluster_id"), f.get("cluster_id"),
-                  ee.Algorithms.If(f.propertyNames().contains("DHSCLUST"), f.get("DHSCLUST"),
-                  ee.Algorithms.If(f.propertyNames().contains("hv001"),     f.get("hv001"),
-                                    ee.String("noid_").cat(ee.String(f.id())))))
-            return ee.String(cid).cat("_").cat(window_label)
-        uid = ee.String(ee.Algorithms.If(has_uid, f.get("uid"), _make_uid()))
-        return f.set({"window": window_label, "uid": uid})
-    return fc.map(_tag)
+L8_SR = 'LANDSAT/LC08/C02/T1_L2'
+L9_SR = 'LANDSAT/LC09/C02/T1_L2'
 
-def chip_square(point):
-    half_m = (CHIP_PIX * SCALE_M) / 2.0
-    return ee.Geometry(point).buffer(half_m).bounds()
+def mask_c2_qa(img: ee.Image) -> ee.Image:
+    qa = img.select('QA_PIXEL')
+    keep = (qa.bitwiseAnd(1 << 3).eq(0)
+            .And(qa.bitwiseAnd(1 << 4).eq(0))
+            .And(qa.bitwiseAnd(1 << 5).eq(0))
+            .And(qa.bitwiseAnd(1 << 7).eq(0)))
+    return img.updateMask(keep)
 
-# ---- Load DHS FeatureCollections ----
-C07 = dedupe_by_xy(drop_zero_zero(ee.FeatureCollection("users/pazern10/2007")))
-C13 = dedupe_by_xy(drop_zero_zero(ee.FeatureCollection("users/pazern10/2013-14")))
-C23 = dedupe_by_xy(drop_zero_zero(ee.FeatureCollection("users/pazern10/2023-24")))
+def landsat_c2_sr_stack(roi: ee.Geometry, start: str, end: str) -> ee.Image:
+    sel = ['SR_B2','SR_B3','SR_B4','SR_B5','SR_B6','SR_B7','ST_B10']
+    c8 = (ee.ImageCollection(L8_SR).filterBounds(roi).filterDate(start, end)
+          .map(mask_c2_qa).select(sel))
+    c9 = (ee.ImageCollection(L9_SR).filterBounds(roi).filterDate(start, end)
+          .map(mask_c2_qa).select(sel))
+    merged = c8.merge(c9)
+    return (merged.median()
+            .rename(['BLUE','GREEN','RED','NIR','SWIR1','SWIR2','TEMP1']))
 
-FC_BY_WINDOW = {
-    "2006-2008": with_window_and_uid(C07, "2006-2008"),
-    "2012-2014": with_window_and_uid(C13, "2012-2014"),
-    "2022-2024": with_window_and_uid(C23, "2022-2024"),
-}
+def add_lonlat(img: ee.Image) -> ee.Image:
+    latlon = ee.Image.pixelLonLat().select(['longitude','latitude'], ['LON','LAT'])
+    return img.addBands(latlon)
 
-# ---- Coverage annotation ----
-def annotate_cov(win, fc_slice):
-    def _mark(f):
-        pt   = f.geometry().centroid(1)
-        chip = chip_square(pt)
-        ms   = landsat_ms_composite(win, chip)  # must filterBounds(geom) internally
-        v = ms.select(MS_BANDS).mask().reduce(ee.Reducer.min())
-        vsum = ee.Number(v.unmask(0).reduceRegion(
-            reducer=ee.Reducer.sum(), geometry=chip, scale=SCALE_M,
-            maxPixels=1e8, bestEffort=True).get("min", 0))
-        cnt  = ee.Number(ee.Image.constant(1).reduceRegion(
-            reducer=ee.Reducer.count(), geometry=chip, scale=SCALE_M,
-            maxPixels=1e8, bestEffort=True).get("constant", 0))
-        frac = ee.Number(ee.Algorithms.If(cnt.gt(0), vsum.divide(cnt), 0))
-        return f.set({"valid_frac": frac})
-    return fc_slice.map(_mark)
+def df_to_features(df: pd.DataFrame) -> ee.FeatureCollection:
+    feats = []
+    for _, r in df.iterrows():
+        geom = ee.Geometry.Point([float(r['lon']), float(r['lat'])])
+        feats.append(ee.Feature(geom, {
+            'country':        str(r['country']),
+            'year':           int(r['year']),
+            'cluster_index':  int(r['cluster']),
+            'lon':            float(r['lon']),
+            'wealthpooled':   float(r['mean_pca_wealth'])
+        }))
+    return ee.FeatureCollection(feats)
 
-# ---- Export one feature ----
-def export_ms(win, feat):
-    uid  = ee.String(feat.get("uid")).getInfo()  # small getInfo per chip
-    chip = chip_square(feat.geometry().centroid(1))
-    img  = landsat_ms_composite(win, chip).select(MS_BANDS).clip(chip).toFloat()
-    desc = f"ms_{win}_{uid}"
-    ee.batch.Export.image.toDrive(
-        image=img,
-        description=desc,
-        folder=drive_folder_for(win),   # per-period folder
-        fileNamePrefix=desc,
-        region=chip,
-        crs="EPSG:4326",
-        dimensions=EXPORT_DIMS,
-        maxPixels=1e13
-    ).start()
+def make_array_image(img: ee.Image, radius_px: int) -> ee.Image:
+    """Create ONE image with per-band array bands, each renamed to the band name."""
+    kern = ee.Kernel.square(radius=radius_px, units='pixels')
+    arr_imgs = []
+    for b in BANDS:
+        arr_imgs.append(img.select([b]).neighborhoodToArray(kern).rename(b))
+    return ee.Image.cat(arr_imgs)
 
-# ---- Slice export with targeted fallback ----
-def _export_slice(win, base, start, limit, quiet=False):
-    slice_fc = ee.FeatureCollection(base.toList(limit, start))
-    keep = annotate_cov(win, slice_fc).filter(ee.Filter.gte("valid_frac", COVERAGE_THRESHOLD))
-    n_keep = keep.size().getInfo()
-    if not quiet:
-        print(f"{win} [{start}:{start+limit}) — eligible {n_keep}")
-    if n_keep == 0:
-        return
-    feats = keep.toList(n_keep)
-    for i in range(n_keep):
-        f = ee.Feature(feats.get(i))
-        export_ms(win, f)
-        if ((i+1) % 50) == 0 and not quiet:
-            print(f"  started {i+1} tasks…")
-        time.sleep(THROTTLE_SECONDS)
+def export_chunk(yr: int,
+                 base_img: ee.Image,
+                 points_fc: ee.FeatureCollection,
+                 folder: str,
+                 fname: str) -> ee.batch.Task:
+    start, end = three_year_window(yr)
+    img = add_lonlat(base_img).addBands(composite_viirs(start, end)).select(BANDS)
+    arr_img = make_array_image(img, EXPORT_TILE_RADIUS)
 
-def export_window_fast(win, start_at=0, batch=20):
-    if win not in FC_BY_WINDOW:
-        print(f"{win}: no FC."); return
-    base = FC_BY_WINDOW[win]
-    n_total = base.size().getInfo()
-    print(f"\n{win}: total={n_total} → folder={drive_folder_for(win)}")
-    idx = start_at
-    while idx < n_total:
-        try:
-            _export_slice(win, base, idx, batch)
-            idx += batch
-        except ee.EEException:
-            five_failed = []
-            for s5 in range(idx, min(idx+batch, n_total), 5):
-                try:
-                    _export_slice(win, base, s5, 5, quiet=True)
-                except ee.EEException:
-                    five_failed.append(s5)
-            for s5 in five_failed:
-                for s1 in range(s5, min(s5+5, n_total)):
-                    try:
-                        _export_slice(win, base, s1, 1, quiet=True)
-                    except ee.EEException:
-                        print(f"  · hard-skip index {s1}")
-            idx += batch
-    print(f"{win}: submitted.")
+    # Sample all band-arrays once; copy scalar props from the point
+    def _sample_point(f):
+        s = (arr_img.sample(
+                region=f.geometry(),
+                scale=SCALE,
+                projection='EPSG:3857',
+                numPixels=1,
+                dropNulls=False,
+                tileScale=12)
+             .first())
+        out = ee.Feature(None).copyProperties(f, ['country','year','cluster_index','lon','wealthpooled'])
+        # s has array properties named exactly as BANDS; set them all at once
+        return out.setMulti(s.toDictionary(ee.List(BANDS)))
 
-# ---- Run ----
-for _win in WINDOWS_TO_RUN:
-    export_window_fast(_win, start_at=START_AT_IDX.get(_win, 0), batch=20)
+    samples = points_fc.map(_sample_point)
 
-print("\n✅ Submitted Landsat MS exports with per-period folders and targeted 20→5→1 backoff.")
+    task = ee.batch.Export.table.toDrive(
+        collection=samples,
+        description=fname,
+        folder=folder,
+        fileNamePrefix=fname,
+        fileFormat='TFRecord',
+        selectors=['country','year','cluster_index','lon','wealthpooled'] + BANDS
+    )
+    task.start()
+    return task
+
+def run_exports():
+    df = pd.read_csv(CSV_PATH)
+    need = {'country','year','cluster','lat','lon','mean_pca_wealth'}
+    missing = need - set(df.columns)
+    if missing:
+        raise ValueError(f"{CSV_PATH} missing columns: {sorted(missing)}")
+
+    df['year'] = pd.to_numeric(df['year'], errors='coerce').astype('Int64')
+    df = df.dropna(subset=['lat','lon','year','cluster'])
+    df = df.loc[df['year'] >= 2016].copy()
+    if df.empty:
+        raise SystemExit("No rows with year >= 2016 in clusters_yeh_spec.csv")
+
+    groups = list(df.groupby(['country','year']))
+    tasks: Dict[Tuple[Any], ee.batch.Task] = {}
+
+    for (cc, yr), g in tqdm(groups, desc="Exporting (country,year)"):
+        g = g.reset_index(drop=True)
+        roi = ee.Geometry.MultiPoint(g[['lon','lat']].values.tolist())
+        start, end = three_year_window(int(yr))
+        base = landsat_c2_sr_stack(roi, start, end)
+
+        n = len(g)
+        n_chunks = math.ceil(n / CHUNK_SIZE) if CHUNK_SIZE else 1
+        for i in range(n_chunks):
+            sl = slice(i*CHUNK_SIZE, min((i+1)*CHUNK_SIZE, n))
+            fc = df_to_features(g.iloc[sl].copy())
+            fname = f"{cc}_{int(yr)}_{i:02d}"
+            t = export_chunk(int(yr), base, fc, DRIVE_FOLDER, fname)
+            tasks[(cc, int(yr), i)] = t
+            time.sleep(0.25)
+
+    done = {
+        ee.batch.Task.State.COMPLETED,
+        ee.batch.Task.State.FAILED,
+        ee.batch.Task.State.CANCEL_REQUESTED,
+        ee.batch.Task.State.CANCELLED
+    }
+    remaining = list(tasks.keys())
+    bar = tqdm(total=len(remaining), desc="Task status")
+    while remaining:
+        new_remaining = []
+        for k in remaining:
+            st = tasks[k].status()
+            state = st.get('state', 'UNKNOWN')
+            if state in done:
+                bar.update(1)
+                if state == ee.batch.Task.State.FAILED:
+                    bar.write(f"{k} → FAILED: {st.get('error_message','')}")
+                else:
+                    bar.write(f"{k} → {state}")
+            else:
+                new_remaining.append(k)
+        remaining = new_remaining
+        if remaining:
+            time.sleep(POLL_SECONDS)
+    bar.close()
+    print("All exports finished (or reached a terminal state).")
+
+# Kick off
+run_exports()
