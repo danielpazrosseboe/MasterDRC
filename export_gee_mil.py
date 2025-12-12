@@ -36,7 +36,7 @@ warnings.filterwarnings('ignore', category=RuntimeWarning, module='numpy')
 if not Path("/content/drive").exists():
     drive.mount("/content/drive")
 ee.Authenticate()
-ee.Initialize(project="master-thesis-measles")
+ee.Initialize(project="master-thesis-measles", opt_url="https://earthengine-highvolume.googleapis.com")
 
 # CONFIGURATION
 CSV_PATH   = "/content/drive/My Drive/Master_Thesis/Surveys/clusters_yeh_spec.csv"
@@ -95,7 +95,7 @@ def apply_scale_factors(img):
               .addBands(thermalBand, None, True)
 
 def build_composite(roi_3857, start, end):
-    """Build composite using Landsat 8 & 9 with robust renaming."""
+    """Build composite using Landsat 8 & 9."""
 
     l8 = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
     l9 = ee.ImageCollection("LANDSAT/LC09/C02/T1_L2")
